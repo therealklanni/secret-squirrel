@@ -16,9 +16,11 @@ pub enum ConfigError {
   NoBaseConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Pattern {
-  pub pattern: String,
+  pub name: String,
+  pub description: Option<String>,
+  pub regex: String,
   pub severity: String,
 }
 
@@ -93,7 +95,34 @@ impl Config {
   }
 
   fn merge(&mut self, other: Self) {
-    self.patterns.extend(other.patterns);
+    // Merge ignore_patterns
+    if let Some(other_ignores) = other.ignore_patterns {
+      match &mut self.ignore_patterns {
+        Some(ignores) => ignores.extend(other_ignores),
+        None => self.ignore_patterns = Some(other_ignores),
+      }
+    }
+
+    // Merge ignore_paths
+    if let Some(other_paths) = other.ignore_paths {
+      match &mut self.ignore_paths {
+        Some(paths) => paths.extend(other_paths),
+        None => self.ignore_paths = Some(other_paths),
+      }
+    }
+
+    // Merge patterns, overwriting existing ones with the same name
+    for other_pattern in other.patterns {
+      if let Some(existing) = self
+        .patterns
+        .iter_mut()
+        .find(|p| p.name == other_pattern.name)
+      {
+        *existing = other_pattern;
+      } else {
+        self.patterns.push(other_pattern);
+      }
+    }
   }
 
   pub fn print(&self) {
@@ -127,7 +156,11 @@ impl Config {
         "medium" => style(&pattern.severity).yellow(),
         _ => style(&pattern.severity).dim(),
       };
-      println!("  - {} ({})", pattern.pattern, severity_style);
+      println!("  - {} ({})", pattern.name, severity_style);
+      if let Some(desc) = &pattern.description {
+        println!("    Description: {}", style(desc).dim());
+      }
+      println!("    Pattern: {}", pattern.regex);
     }
   }
 }
@@ -153,7 +186,9 @@ mod tests {
       temp,
       r"
 patterns:
-  - pattern: '[A-Za-z0-9]{{40}}'
+  - name: 'github'
+    description: 'GitHub personal access token'
+    regex: '[A-Za-z0-9]{{40}}'
     severity: critical
 ignore_patterns:
   - 'TEST_API_KEY=.*'
@@ -165,9 +200,50 @@ ignore_paths:
     let config = Config::load_with_path(Some(temp.path().to_path_buf()))?;
     assert_eq!(config.patterns.len(), 1);
     assert_eq!(config.patterns[0].severity, "critical");
+    assert_eq!(
+      config.patterns[0].description,
+      Some("GitHub personal access token".to_string())
+    );
     assert_eq!(config.ignore_patterns.unwrap().len(), 1);
     assert_eq!(config.ignore_paths.unwrap().len(), 1);
 
     Ok(())
+  }
+
+  #[test]
+  fn test_config_merge() {
+    let mut base = Config {
+      patterns: vec![Pattern {
+        name: "github".to_string(),
+        description: Some("GitHub token".to_string()),
+        regex: "[A-Za-z0-9]{40}".to_string(),
+        severity: "critical".to_string(),
+      }],
+      ignore_patterns: Some(vec!["TEST_.*".to_string()]),
+      ignore_paths: Some(vec!["tests/*".to_string()]),
+    };
+    let local = Config {
+      patterns: vec![
+        Pattern {
+          name: "github".to_string(), // Same name, should overwrite
+          description: Some("GitHub PAT".to_string()),
+          regex: "gh[pat]-[A-Za-z0-9]{40}".to_string(),
+          severity: "high".to_string(),
+        },
+        Pattern {
+          name: "aws".to_string(), // New pattern, should be added
+          description: Some("AWS access key".to_string()),
+          regex: "AKIA[A-Z0-9]{16}".to_string(),
+          severity: "critical".to_string(),
+        },
+      ],
+      ignore_patterns: Some(vec!["DUMMY_.*".to_string()]),
+      ignore_paths: Some(vec!["fixtures/*".to_string()]),
+    };
+    base.merge(local);
+    assert_eq!(base.patterns.len(), 2);
+    assert_eq!(base.patterns[0].regex, "gh[pat]-[A-Za-z0-9]{40}");
+    assert_eq!(base.ignore_patterns.unwrap().len(), 2);
+    assert_eq!(base.ignore_paths.unwrap().len(), 2);
   }
 }

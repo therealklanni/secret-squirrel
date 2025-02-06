@@ -1,5 +1,5 @@
 patterns:
   - name: "generic-api-key-env"
     description: "Generic API key in environment variable"
-    regex: "[A-Za-z0-9_]+_API_KEY"
-    severity: "HIGH"
+    pattern: "\w+_API_KEY"
+    severity: "LOW"

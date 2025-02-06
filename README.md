@@ -56,11 +56,17 @@ ignore_paths:
 
 # Custom severity levels for different patterns
 patterns:
-  - pattern: '[A-Za-z0-9]{40}'  # GitHub token pattern
+  - name: github_token
+    description: GitHub personal access token pattern
+    regex: '[A-Za-z0-9]{40}'
     severity: critical
-  - pattern: '(?i)password\s*=\s*.+'
+  - name: password
+    description: Generic password in configuration
+    regex: '(?i)password\s*=\s*.+'
     severity: high
-  - pattern: '\b[\w\.-]+@[\w\.-]+\.\w+\b'  # Email pattern
+  - name: email
+    description: Email addresses that might contain PII
+    regex: '\b[\w\.-]+@[\w\.-]+\.\w+\b'
     severity: medium
 ```
 
