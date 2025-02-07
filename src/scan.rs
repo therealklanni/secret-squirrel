@@ -139,12 +139,16 @@ impl ScanProgress {
     );
 
     // Print completed files
-    println!("Completed files:");
-    println!("---------------");
+    println!("Scanned files:");
+    println!("──────────────");
     for (path, has_match) in self.completed.iter().zip(self.has_matches.iter())
     {
-      let status = if *has_match { "❌" } else { "✓" };
-      println!("{status} {path}");
+      let status = if *has_match {
+        style("●").red()
+      } else {
+        style("○").green()
+      };
+      println!(" {status} {path}");
     }
     println!(); // Space for active scans
   }
@@ -161,15 +165,11 @@ impl ScanProgress {
       .iter()
       .filter(|&&has_match| has_match)
       .count();
-    println!(
-      "\n{} {} files scanned",
-      style("✓").green(),
-      self.total_files
-    );
+    println!("\n{} {} files scanned", style("🔍"), self.total_files);
     if issues > 0 {
       println!(
         "{} {} files contained potential secrets",
-        style("!").red(),
+        style("🚨").red().bold(),
         issues
       );
     }
@@ -281,7 +281,7 @@ impl Scanner<'_> {
     }
 
     println!("\n{}", style("Matches found:").red().bold());
-    println!("{}", style("==============").red());
+    println!("{}", style("══════════════").red());
 
     for m in &self.matches {
       let severity_style = match m.pattern.severity.to_lowercase().as_str() {
