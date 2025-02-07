@@ -17,7 +17,7 @@ pub enum ConfigError {
   NoBaseConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct Pattern {
   pub description: Option<String>,
   pub regex: String,
