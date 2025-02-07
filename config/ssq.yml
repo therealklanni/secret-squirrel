@@ -1,5 +1,65 @@
 patterns:
-  generic-api-key-env:
-    description: "Generic API key in environment variable"
-    regex: "[A-Za-z0-9_]+_API_KEY"
+  github-pat:
+    description: "GitHub Personal Access Token"
+    regex: "ghp_[0-9a-zA-Z]{36}"
+    severity: "CRITICAL"
+
+  github-oauth:
+    description: "GitHub OAuth Access Token"
+    regex: "gho_[0-9a-zA-Z]{36}"
+    severity: "CRITICAL"
+
+  aws-access-key:
+    description: "AWS Access Key ID"
+    regex: "(A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}"
+    severity: "CRITICAL"
+
+  aws-secret-key:
+    description: "AWS Secret Access Key"
+    regex: "[0-9a-zA-Z/+]{40}"
+    severity: "CRITICAL"
+
+  google-api-key:
+    description: "Google API Key"
+    regex: "AIza[0-9A-Za-z\\-_]{35}"
     severity: "HIGH"
+
+  stripe-key:
+    description: "Stripe API Key"
+    regex: "(sk|pk)_(test|live)_[0-9a-zA-Z]{24,99}"
+    severity: "CRITICAL"
+
+  slack-token:
+    description: "Slack Token or Webhook"
+    regex: "xox[baprs]-([0-9a-zA-Z]{10,48})?"
+    severity: "HIGH"
+
+  npm-token:
+    description: "NPM Access Token"
+    regex: "npm_[A-Za-z0-9]{36}"
+    severity: "HIGH"
+
+  generic-api-key:
+    description: "Generic API Key or Secret"
+    regex: "(api[_-]?key|token|secret)['\"]?\\s*[:=]\\s*['\"]?([A-Za-z0-9+/=]{32,}).*"
+    severity: "MEDIUM"
+
+  private-key:
+    description: "Private Key"
+    regex: "-----BEGIN\\s+(RSA|DSA|EC|OPENSSH|PRIVATE)\\s+KEY[^-]*-----"
+    severity: "CRITICAL"
+
+  password-in-url:
+    description: "Password in URL"
+    regex: "[a-zA-Z]{3,10}://[^/\\s:@]*?:[^/\\s:@]*?@[^/\\s:]+"
+    severity: "HIGH"
+
+  jwt-token:
+    description: "JWT Token"
+    regex: "ey[A-Za-z0-9-_=]+\\.[A-Za-z0-9-_=]+\\.?[A-Za-z0-9-_.+/=]*"
+    severity: "MEDIUM"
+
+  generic-password:
+    description: "Generic Password Assignment"
+    regex: "(?i)(password|passwd|pwd)\\s*[:=]\\s*['\"]?[^\\s'\"]+"
+    severity: "LOW"
