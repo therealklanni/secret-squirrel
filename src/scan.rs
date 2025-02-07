@@ -9,6 +9,7 @@ use grep_matcher::Matcher;
 use grep_regex::RegexMatcher;
 use grep_searcher::sinks::UTF8;
 use grep_searcher::{BinaryDetection, SearcherBuilder};
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::WalkBuilder;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashSet;
@@ -51,7 +52,7 @@ struct ScanProgress {
 }
 
 impl ScanProgress {
-  fn new(path: &Path) -> Result<Self> {
+  fn new(path: &Path, ignore_matcher: Option<&Gitignore>) -> Result<Self> {
     // Clear screen and hide cursor
     let mut stdout = stdout();
     queue!(
@@ -62,14 +63,22 @@ impl ScanProgress {
     )?;
     stdout.flush()?;
 
-    // Count total files before starting
-    let total_files = WalkBuilder::new(path)
+    // Build walker
+    let walker = WalkBuilder::new(path)
       .hidden(false)
       .ignore(true)
       .git_ignore(true)
-      .build()
+      .build();
+
+    // Count total files, excluding ignored paths
+    let total_files = walker
       .filter_map(Result::ok)
-      .filter(|e| e.path().is_file())
+      .filter(|e| {
+        let path = e.path();
+        path.is_file()
+          && ignore_matcher
+            .map_or(true, |m| !m.matched(path, false).is_ignore())
+      })
       .count();
 
     let progress = Self {
@@ -80,9 +89,7 @@ impl ScanProgress {
       processed_files: 0,
     };
 
-    // Print initial state
     progress.print_summary();
-
     Ok(progress)
   }
 
@@ -174,16 +181,21 @@ impl ScanProgress {
 impl Scanner<'_> {
   #[allow(clippy::too_many_lines)]
   pub fn scan_path(&mut self, path: &Path) -> Result<()> {
-    let mut progress = ScanProgress::new(path)?;
+    // Build gitignore-style matcher for ignore_paths first
+    let ignore_matcher = if let Some(ref paths) = self.config.ignore_paths {
+      let mut builder = GitignoreBuilder::new(path);
+      for pattern in paths {
+        builder.add_line(None, pattern)?;
+      }
+      Some(builder.build()?)
+    } else {
+      None
+    };
+
+    let mut progress = ScanProgress::new(path, ignore_matcher.as_ref())?;
     let mut searcher = SearcherBuilder::new()
       .binary_detection(BinaryDetection::quit(b'\x00'))
       .line_number(true)
-      .build();
-
-    let walker = WalkBuilder::new(path)
-      .hidden(false)
-      .ignore(true)
-      .git_ignore(true)
       .build();
 
     let ignore_pattern_matcher =
@@ -193,30 +205,25 @@ impl Scanner<'_> {
         None
       };
 
-    let ignore_path_matcher = if let Some(ref paths) = self.config.ignore_paths
-    {
-      Some(RegexMatcher::new(&paths.join("|"))?)
-    } else {
-      None
-    };
+    // Create walker filtered by ignore paths
+    let walker = WalkBuilder::new(path)
+      .hidden(false)
+      .ignore(true)
+      .git_ignore(true)
+      .build()
+      .filter_map(Result::ok)
+      .filter(|e| {
+        let path = e.path();
+        path.is_file()
+          && ignore_matcher
+            .as_ref()
+            .map_or(true, |m| !m.matched(path, false).is_ignore())
+      });
 
-    for result in walker {
-      let entry = result?;
+    for entry in walker {
       let path = entry.path();
-      if !path.is_file() {
-        continue;
-      }
-
       let file_path = path.display().to_string();
-
       let pb = progress.start_file(&file_path, self.patterns_count);
-
-      if let Some(ref matcher) = ignore_path_matcher {
-        if matcher.is_match(path.to_string_lossy().as_bytes())? {
-          progress.complete_file(file_path.clone(), false, &pb);
-          continue;
-        }
-      }
 
       let mut found_match = false;
 
@@ -328,7 +335,7 @@ mod tests {
       "test-key".into(),
       Pattern {
         description: Some("Test API Key".into()),
-        regex: "^API_KEY=([A-Za-z0-9]+)$".into(), // More precise regex
+        regex: "^API_KEY=([A-Za-z0-9]+)$".into(),
         severity: "HIGH".into(),
       },
     );
@@ -336,7 +343,7 @@ mod tests {
       "password".into(),
       Pattern {
         description: Some("Password in file".into()),
-        regex: "^password=([^\\s]+)$".into(), // More precise regex
+        regex: "^password=([^\\s]+)$".into(),
         severity: "MEDIUM".into(),
       },
     );
