@@ -1,3 +1,58 @@
+# Common patterns to ignore
+ignore_patterns:
+  - "TEST_.*_KEY"
+  - "DUMMY_.*"
+  - "FAKE_.*"
+  - "SAMPLE_.*"
+  - "EXAMPLE_.*"
+  - "localhost:[0-9]+"
+  - "127\\.0\\.0\\.1"
+  - "0\\.0\\.0\\.0"
+  - "test[-_]?key"
+  - "dev[-_]?key"
+  - "no[-_]?key"
+  - "not[-_]?a[-_]?real[-_]?key"
+  - "(?i)checksum\\s*=\\s*['\"]?[a-f0-9]{64}['\"]?"
+  - "(?i)sha(?:256|384|512)?\\s*=\\s*['\"]?[a-f0-9]{64}['\"]?"
+  - "(?i)hash\\s*=\\s*['\"]?[a-f0-9]{64}['\"]?"
+
+# Common paths to ignore
+ignore_paths:
+  # Ignore git
+  - ".git/**/*"
+  # Ignore test paths
+  - "tests/**/*"
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/test/**/*"
+  - "**/tests/**/*"
+  - "**/__tests__/**/*"
+  - "**/__mocks__/**/*"
+  - "**/fixtures/**/*"
+  - "**/mock/**/*"
+  - "**/mocks/**/*"
+  # Ignore misc paths
+  - "**/example/**/*"
+  - "**/examples/**/*"
+  - "**/docs/**/*"
+  - "**/documentation/**/*"
+  # Ignore lock files
+  - "**/package-lock.json"
+  - "**/yarn.lock"
+  - "**/pnpm-lock.yaml"
+  - "**/Gemfile.lock"
+  - "**/Cargo.lock"
+  - "**/poetry.lock"
+  - "**/composer.lock"
+  - "**/mix.lock"
+  - "**/Podfile.lock"
+  - "**/pubspec.lock"
+  - "**/go.sum"
+  - "**/paket.lock"
+  - "**/shrinkwrap.yaml"
+  - "**/*.sbom"
+  - "**/bun.lockb"
+
 patterns:
   github-pat:
     description: "GitHub Personal Access Token"
