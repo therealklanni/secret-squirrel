@@ -4,11 +4,11 @@ A command-line tool for detecting sensitive information in your code before it g
 
 ## Features
 
-- 🔍 Scans repositories for potential sensitive information
-- 🕒 Digs through Git history to find previously committed secrets
-- 🎯 Can focus on staged files only (perfect for git hooks)
-- ⚙️ Configurable pattern matching and ignores
-- 🚀 Written in Rust for maximum performance
+- [x] 🚀 Written in Rust for maximum performance
+- [x] 🔍 Scans repositories for potential sensitive information
+- [x] ⚙️ Configurable pattern matching and ignores
+- [ ] 🕒 Digs through Git history to find previously committed secrets
+- [ ] 🎯 Can focus on staged files only (perfect for git hooks)
 
 ## Installation
 
