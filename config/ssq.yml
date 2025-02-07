@@ -11,7 +11,7 @@ ignore_patterns:
   - "test[-_]?key"
   - "dev[-_]?key"
   - "no[-_]?key"
-  - "not[-_]?a[-_]?real[-_]?key"
+  - "not[-_]?a[-_]?(real[-_]?)?key"
   - "(?i)checksum\\s*=\\s*['\"]?[a-f0-9]{64}['\"]?"
   - "(?i)sha(?:256|384|512)?\\s*=\\s*['\"]?[a-f0-9]{64}['\"]?"
   - "(?i)hash\\s*=\\s*['\"]?[a-f0-9]{64}['\"]?"
@@ -71,7 +71,7 @@ patterns:
 
   aws-secret-key:
     description: "AWS Secret Access Key"
-    regex: "[0-9a-zA-Z/+]{40}"
+    regex: '(?:AWS_SECRET(?:_ACCESS)?_KEY|SECRET_ACCESS_KEY)=[A-Za-z0-9/+]{40}|["''](?:aws_)?secret(?:_access)?_key["'']:\s*["''][A-Za-z0-9/+]{40}["'']'
     severity: "CRITICAL"
 
   google-api-key:
