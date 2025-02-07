@@ -108,14 +108,39 @@ impl ScanProgress {
     file_path: &str,
     patterns_count: usize,
   ) -> ProgressBar {
+    // Reserve space for: "⟳ " + path + " [=>] 99/99 checking-very-long-pattern-name"
+    const RESERVED_SPACE: usize = 50;
+
     let pb = self.multi.add(ProgressBar::new(patterns_count as u64));
+
+    // Get terminal width and calculate max path length
+    let term_width = terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
+    let max_path_len = term_width.saturating_sub(RESERVED_SPACE);
+
+    // More aggressive path truncation
+    let display_path = if file_path.len() > max_path_len {
+      let parts: Vec<&str> = file_path.split('/').collect();
+      if parts.len() > 2 {
+        // Only keep last path segment
+        format!(".../{}", parts.last().unwrap_or(&""))
+      } else {
+        // Fallback to simple truncation for short paths
+        format!(
+          "...{}",
+          &file_path[file_path.len().saturating_sub(max_path_len - 3)..]
+        )
+      }
+    } else {
+      file_path.to_string()
+    };
+
     pb.set_style(
-      ProgressStyle::default_bar()
-        .template("{spinner:.green} {prefix:.cyan} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-        .expect("Failed to set progress bar template")
-        .progress_chars("=> "),
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} {prefix:.cyan} [{bar:10.cyan/blue}] {pos}/{len} {msg}")
+            .expect("Failed to set progress bar template")
+            .progress_chars("=>-"),
     );
-    pb.set_prefix(format!("⟳ {file_path}"));
+    pb.set_prefix(format!("⟳ {display_path}"));
     pb
   }
 
