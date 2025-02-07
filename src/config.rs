@@ -49,8 +49,11 @@ pub struct Config {
   pub patterns: HashMap<String, Pattern>,
   pub ignore_patterns: Option<Vec<String>>,
   pub ignore_paths: Option<Vec<String>>,
+  pub severity: Option<String>,
   #[serde(skip)]
   severity_filter: Option<SeverityLevel>,
+  #[serde(skip)]
+  computed_severity: Option<SeverityLevel>,
 }
 
 impl Config {
@@ -58,17 +61,29 @@ impl Config {
     config_path: Option<PathBuf>,
   ) -> Result<Self, ConfigError> {
     // Load base config
-    let base_config = if let Some(path) = config_path {
+    let mut base_config = if let Some(path) = config_path {
       debug(&format!("Loading config from: {}", path.display()));
       Self::load_from_path(path)?
     } else {
       Self::load_base_config()?
     };
 
+    // Initialize base config's computed severity
+    if let Some(ref sev) = base_config.severity {
+      base_config.computed_severity = Some(SeverityLevel::from(sev.as_str()));
+    }
+
     // Try to load and merge local config
-    if let Ok(local_config) = Self::load_local_config() {
+    if let Ok(mut local_config) = Self::load_local_config() {
       debug("Merging local config with base config");
 
+      // Initialize local config's computed severity
+      if let Some(ref sev) = local_config.severity {
+        local_config.computed_severity =
+          Some(SeverityLevel::from(sev.as_str()));
+      }
+
+      // Merge configs
       let mut final_config = local_config;
 
       // Only add patterns from base that don't exist in local
@@ -76,11 +91,16 @@ impl Config {
         final_config.patterns.entry(name).or_insert(pattern);
       }
 
+      // Use local ignore lists and severity if present, otherwise use base
       if final_config.ignore_patterns.is_none() {
         final_config.ignore_patterns = base_config.ignore_patterns;
       }
       if final_config.ignore_paths.is_none() {
         final_config.ignore_paths = base_config.ignore_paths;
+      }
+      if final_config.computed_severity.is_none() {
+        final_config.computed_severity = base_config.computed_severity;
+        final_config.severity = base_config.severity;
       }
 
       Ok(final_config)
@@ -132,11 +152,25 @@ impl Config {
   }
 
   pub fn set_severity_filter(&mut self, level: &str) {
+    // CLI flag takes precedence over config file
     self.severity_filter = Some(SeverityLevel::from(level));
+    // Ensure computed_severity is cached
+    if self.computed_severity.is_none() {
+      self.computed_severity =
+        self.severity.as_deref().map(SeverityLevel::from);
+    }
+  }
+
+  fn get_effective_severity(&self) -> Option<&SeverityLevel> {
+    // Use CLI-set filter if present, otherwise use config file setting
+    self
+      .severity_filter
+      .as_ref()
+      .or(self.computed_severity.as_ref())
   }
 
   fn meets_severity(&self, pattern: &Pattern) -> bool {
-    if let Some(min_severity) = &self.severity_filter {
+    if let Some(min_severity) = self.get_effective_severity() {
       let pattern_severity = SeverityLevel::from(pattern.severity.as_str());
       pattern_severity >= *min_severity
     } else {
