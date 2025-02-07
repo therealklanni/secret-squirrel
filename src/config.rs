@@ -2,6 +2,7 @@ use crate::{debug::debug, paths};
 use anyhow::Result;
 use console::style;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -18,7 +19,6 @@ pub enum ConfigError {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Pattern {
-  pub name: String,
   pub description: Option<String>,
   pub regex: String,
   pub severity: String,
@@ -27,7 +27,7 @@ pub struct Pattern {
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Config {
   #[serde(default)]
-  pub patterns: Vec<Pattern>,
+  pub patterns: HashMap<String, Pattern>,
   pub ignore_patterns: Option<Vec<String>>,
   pub ignore_paths: Option<Vec<String>>,
 }
@@ -36,17 +36,37 @@ impl Config {
   pub fn load_with_path(
     config_path: Option<PathBuf>,
   ) -> Result<Self, ConfigError> {
-    let mut config = match config_path {
-      Some(path) => Self::load_from_path(path)?,
-      None => Self::load_base_config()?,
+    // Load base config
+    let base_config = if let Some(path) = config_path {
+      debug(&format!("Loading config from: {}", path.display()));
+      Self::load_from_path(path)?
+    } else {
+      Self::load_base_config()?
     };
 
-    // Try to load local config and merge
+    // Try to load and merge local config
     if let Ok(local_config) = Self::load_local_config() {
-      config.merge(local_config);
-    }
+      debug("Merging local config with base config");
 
-    Ok(config)
+      let mut final_config = local_config;
+
+      // Only add patterns from base that don't exist in local
+      for (name, pattern) in base_config.patterns {
+        final_config.patterns.entry(name).or_insert(pattern);
+      }
+
+      if final_config.ignore_patterns.is_none() {
+        final_config.ignore_patterns = base_config.ignore_patterns;
+      }
+      if final_config.ignore_paths.is_none() {
+        final_config.ignore_paths = base_config.ignore_paths;
+      }
+
+      Ok(final_config)
+    } else {
+      debug("Using base config");
+      Ok(base_config)
+    }
   }
 
   fn load_from_path(path: PathBuf) -> Result<Self, ConfigError> {
@@ -57,14 +77,12 @@ impl Config {
       )));
     }
 
-    let contents = fs::read_to_string(path)?;
-    Ok(serde_yaml::from_str(&contents)?)
+    Ok(serde_yaml::from_str(&fs::read_to_string(path)?)?)
   }
 
   fn load_base_config() -> Result<Self, ConfigError> {
     let config_dir =
       paths::get_config_dir().ok_or(ConfigError::NoBaseConfig)?;
-
     let base_config_path = config_dir.join("config.yml");
     debug(&format!(
       "Loading base config from: {}",
@@ -72,57 +90,24 @@ impl Config {
     ));
 
     if !base_config_path.exists() {
-      debug(&format!(
-        "No base config found at: {}",
-        base_config_path.display()
-      ));
+      debug("No base config found");
       return Ok(Self::default());
     }
 
-    let contents = fs::read_to_string(base_config_path)?;
-    Ok(serde_yaml::from_str(&contents)?)
+    Ok(serde_yaml::from_str(&fs::read_to_string(
+      &base_config_path,
+    )?)?)
   }
 
   fn load_local_config() -> Result<Self, ConfigError> {
-    let local_path = PathBuf::from("./.ssq.yml");
+    let local_path = PathBuf::from(".ssq.yml");
 
     if !local_path.exists() {
       return Ok(Self::default());
     }
 
-    let contents = fs::read_to_string(local_path)?;
-    Ok(serde_yaml::from_str(&contents)?)
-  }
-
-  fn merge(&mut self, other: Self) {
-    // Merge ignore_patterns
-    if let Some(other_ignores) = other.ignore_patterns {
-      match &mut self.ignore_patterns {
-        Some(ignores) => ignores.extend(other_ignores),
-        None => self.ignore_patterns = Some(other_ignores),
-      }
-    }
-
-    // Merge ignore_paths
-    if let Some(other_paths) = other.ignore_paths {
-      match &mut self.ignore_paths {
-        Some(paths) => paths.extend(other_paths),
-        None => self.ignore_paths = Some(other_paths),
-      }
-    }
-
-    // Merge patterns, overwriting existing ones with the same name
-    for other_pattern in other.patterns {
-      if let Some(existing) = self
-        .patterns
-        .iter_mut()
-        .find(|p| p.name == other_pattern.name)
-      {
-        *existing = other_pattern;
-      } else {
-        self.patterns.push(other_pattern);
-      }
-    }
+    debug(&format!("Found local config at: {}", local_path.display()));
+    Ok(serde_yaml::from_str(&fs::read_to_string(&local_path)?)?)
   }
 
   pub fn print(&self) {
@@ -149,14 +134,14 @@ impl Config {
     }
 
     println!("\n{}", style("Detection Patterns:").bold());
-    for pattern in &self.patterns {
+    for (name, pattern) in &self.patterns {
       let severity_style = match pattern.severity.to_lowercase().as_str() {
         "critical" => style(&pattern.severity).red().bold(),
         "high" => style(&pattern.severity).red(),
         "medium" => style(&pattern.severity).yellow(),
         _ => style(&pattern.severity).dim(),
       };
-      println!("  - {} ({})", pattern.name, severity_style);
+      println!("  - {name} ({severity_style})");
       if let Some(desc) = &pattern.description {
         println!("    Description: {}", style(desc).dim());
       }
@@ -169,7 +154,7 @@ impl Config {
 mod tests {
   use super::*;
   use std::io::Write;
-  use tempfile::NamedTempFile;
+  use tempfile::{NamedTempFile, TempDir};
 
   #[test]
   fn test_empty_config() {
@@ -186,7 +171,7 @@ mod tests {
       temp,
       r"
 patterns:
-  - name: 'github'
+  github:
     description: 'GitHub personal access token'
     regex: '[A-Za-z0-9]{{40}}'
     severity: critical
@@ -197,11 +182,11 @@ ignore_paths:
 "
     )?;
 
-    let config = Config::load_with_path(Some(temp.path().to_path_buf()))?;
+    let config = Config::load_from_path(temp.path().to_path_buf())?;
     assert_eq!(config.patterns.len(), 1);
-    assert_eq!(config.patterns[0].severity, "critical");
+    assert_eq!(config.patterns["github"].severity, "critical");
     assert_eq!(
-      config.patterns[0].description,
+      config.patterns["github"].description,
       Some("GitHub personal access token".to_string())
     );
     assert_eq!(config.ignore_patterns.unwrap().len(), 1);
@@ -211,39 +196,72 @@ ignore_paths:
   }
 
   #[test]
-  fn test_config_merge() {
-    let mut base = Config {
-      patterns: vec![Pattern {
-        name: "github".to_string(),
-        description: Some("GitHub token".to_string()),
-        regex: "[A-Za-z0-9]{40}".to_string(),
-        severity: "critical".to_string(),
-      }],
-      ignore_patterns: Some(vec!["TEST_.*".to_string()]),
-      ignore_paths: Some(vec!["tests/*".to_string()]),
-    };
-    let local = Config {
-      patterns: vec![
-        Pattern {
-          name: "github".to_string(), // Same name, should overwrite
-          description: Some("GitHub PAT".to_string()),
-          regex: "gh[pat]-[A-Za-z0-9]{40}".to_string(),
-          severity: "high".to_string(),
-        },
-        Pattern {
-          name: "aws".to_string(), // New pattern, should be added
-          description: Some("AWS access key".to_string()),
-          regex: "AKIA[A-Z0-9]{16}".to_string(),
-          severity: "critical".to_string(),
-        },
-      ],
-      ignore_patterns: Some(vec!["DUMMY_.*".to_string()]),
-      ignore_paths: Some(vec!["fixtures/*".to_string()]),
-    };
-    base.merge(local);
-    assert_eq!(base.patterns.len(), 2);
-    assert_eq!(base.patterns[0].regex, "gh[pat]-[A-Za-z0-9]{40}");
-    assert_eq!(base.ignore_patterns.unwrap().len(), 2);
-    assert_eq!(base.ignore_paths.unwrap().len(), 2);
+  fn test_config_override() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    std::env::set_current_dir(&temp_dir)?;
+
+    // Create base config
+    let base_config = r"
+patterns:
+  github:
+    description: 'GitHub token'
+    regex: '[A-Za-z0-9]{40}'
+    severity: critical
+  aws:
+    description: 'AWS key'
+    regex: 'AKIA.*'
+    severity: high
+ignore_patterns:
+  - 'TEST_.*'
+ignore_paths:
+  - 'tests/*'
+";
+    std::fs::write("config.yml", base_config)?;
+
+    // Create local config
+    let local_config = r"
+patterns:
+  github:
+    description: 'GitHub PAT'
+    regex: 'gh[pat]-[0-9a-f]{40}'
+    severity: high
+  npm:
+    description: 'NPM token'
+    regex: 'npm_[A-Za-z0-9]{64}'
+    severity: critical
+ignore_patterns:
+  - 'DUMMY_.*'
+ignore_paths:
+  - 'examples/*'
+";
+    std::fs::write(".ssq.yml", local_config)?;
+
+    // Load config (this should load both and merge correctly)
+    let config = Config::load_with_path(Some(PathBuf::from("config.yml")))?;
+
+    // Verify pattern merging
+    assert_eq!(config.patterns.len(), 3); // github (overridden) + aws (preserved) + npm (new)
+
+    // Check github pattern was overridden
+    assert_eq!(config.patterns["github"].regex, "gh[pat]-[0-9a-f]{40}");
+    assert_eq!(config.patterns["github"].severity, "high");
+    assert_eq!(
+      config.patterns["github"].description,
+      Some("GitHub PAT".to_string())
+    );
+
+    // Check aws pattern was preserved
+    assert_eq!(config.patterns["aws"].regex, "AKIA.*");
+    assert_eq!(config.patterns["aws"].severity, "high");
+
+    // Check npm pattern was added
+    assert_eq!(config.patterns["npm"].regex, "npm_[A-Za-z0-9]{64}");
+    assert_eq!(config.patterns["npm"].severity, "critical");
+
+    // Verify ignore lists were replaced
+    assert_eq!(config.ignore_patterns, Some(vec!["DUMMY_.*".to_string()]));
+    assert_eq!(config.ignore_paths, Some(vec!["examples/*".to_string()]));
+
+    Ok(())
   }
 }

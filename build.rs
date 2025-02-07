@@ -10,45 +10,33 @@ fn is_wsl() -> bool {
 
 fn get_config_dir() -> Option<PathBuf> {
   if cfg!(windows) && !is_wsl() {
-    std::env::var("APPDATA")
+    env::var("APPDATA")
       .ok()
       .map(|appdata| PathBuf::from(appdata).join("secret-squirrel"))
   } else {
-    std::env::var("HOME")
+    env::var("HOME")
       .ok()
       .map(|home| PathBuf::from(home).join(".config").join("secret-squirrel"))
   }
 }
 
 fn main() {
+  let manifest_dir =
+    env::var("CARGO_MANIFEST_DIR").expect("Failed to get manifest dir");
+  let config_src = PathBuf::from(&manifest_dir).join("config").join("ssq.yml");
+
+  assert!(
+    config_src.exists(),
+    "Source config not found at: {}",
+    config_src.display()
+  );
+
   if let Some(config_dir) = get_config_dir() {
-    let config_src = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
-      .join("config")
-      .join("ssq.yml");
-
-    if !config_src.exists() {
-      println!(
-        "cargo:warning=Source config file not found at: {}",
-        config_src.display()
-      );
-      return;
-    }
-
-    println!(
-      "cargo:warning=Installing config to: {}",
-      config_dir.display()
-    );
-
-    if let Err(e) = fs::create_dir_all(&config_dir) {
-      println!("cargo:warning=Failed to create config directory: {e}");
-      return;
-    }
-
+    fs::create_dir_all(&config_dir).expect("Failed to create config directory");
     let config_dest = config_dir.join("config.yml");
 
-    match fs::copy(&config_src, &config_dest) {
-      Ok(_) => println!("cargo:warning=Config file installed successfully"),
-      Err(e) => println!("cargo:warning=Failed to copy config file: {e}"),
-    }
+    fs::copy(&config_src, &config_dest).expect("Failed to copy config file");
+  } else {
+    panic!("Could not determine config directory");
   }
 }
