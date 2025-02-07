@@ -1,6 +1,7 @@
 use crate::config::{Config, Pattern};
 use anyhow::Result;
 use console::style;
+use crossterm::terminal;
 use crossterm::{
   cursor, queue,
   terminal::{Clear, ClearType},
@@ -23,6 +24,8 @@ use std::sync::Arc;
 
 const LARGE_FILE_THRESHOLD: u64 = 1024 * 1024; // 1MB
 const BINARY_CHECK_BYTES: usize = 512; // Check first 512 bytes for binary content
+const MAX_CONCURRENT_SCANS: usize = 6; // Limit parallel scans
+const MIN_HEADER_LINES: usize = 6; // Minimum lines needed for header
 
 #[derive(Debug)]
 pub struct Match {
@@ -37,7 +40,6 @@ pub struct Scanner<'a> {
   config: &'a Config,
   matches: Vec<Match>,
   scanned_files: HashSet<String>,
-  patterns_count: usize,
 }
 
 impl<'a> Scanner<'a> {
@@ -46,7 +48,6 @@ impl<'a> Scanner<'a> {
       config,
       matches: Vec::new(),
       scanned_files: HashSet::new(),
-      patterns_count: config.patterns.len(),
     }
   }
 }
@@ -132,34 +133,35 @@ impl ScanProgress {
   }
 
   fn print_summary(&self) {
-    // Move to top of screen and print summary
     let mut stdout = stdout();
-    queue!(
-      stdout,
-      cursor::MoveTo(0, 0),
-      Clear(ClearType::FromCursorDown),
-    )
-    .unwrap();
-    stdout.flush().unwrap();
+    let problem_files: Vec<_> = self
+      .completed
+      .iter()
+      .zip(self.has_matches.iter())
+      .filter(|(_, &has_match)| has_match)
+      .collect();
 
+    // Move to top and clear screen
+    queue!(stdout, cursor::MoveTo(0, 0), Clear(ClearType::All),).unwrap();
+
+    // Print header content
     println!(
-      "Progress: {}/{} files\n",
+      "Progress: {}/{} files",
       self.processed_files, self.total_files
     );
 
-    // Print completed files
-    println!("Scanned files:");
-    println!("──────────────");
-    for (path, has_match) in self.completed.iter().zip(self.has_matches.iter())
-    {
-      let status = if *has_match {
-        style("●").red()
-      } else {
-        style("○").green()
-      };
-      println!(" {status} {path}");
+    if !problem_files.is_empty() {
+      println!("\nProblematic files:");
+      println!("──────────────────");
+      for (path, _) in problem_files {
+        println!(" {} {}", style("●").red(), path);
+      }
     }
-    println!(); // Space for active scans
+
+    // Only add one blank line before progress bars
+    println!();
+
+    stdout.flush().unwrap();
   }
 
   fn finish(self) -> Result<()> {
@@ -222,12 +224,7 @@ impl Scanner<'_> {
       None
     };
 
-    let mut progress = ScanProgress::new(path, ignore_matcher.as_ref())?;
-    let mut searcher = SearcherBuilder::new()
-      .binary_detection(BinaryDetection::quit(b'\x00'))
-      .line_number(true)
-      .build();
-
+    let progress = ScanProgress::new(path, ignore_matcher.as_ref())?;
     let ignore_pattern_matcher =
       if let Some(ref patterns) = self.config.ignore_patterns {
         Some(RegexMatcher::new(&patterns.join("|"))?)
@@ -267,104 +264,114 @@ impl Scanner<'_> {
       })
       .collect();
 
-    // Process files in parallel
-    files.into_par_iter().for_each(|entry| {
-      let binding = entry.unwrap();
-      let path = binding.path();
-      let file_path = path.display().to_string();
+    // Get terminal height and calculate max concurrent scans
+    let (_, term_height) = terminal::size()?;
+    let max_scans = ((term_height as usize).saturating_sub(MIN_HEADER_LINES))
+      .min(MAX_CONCURRENT_SCANS);
 
-      // Quick binary check and size check
-      if let Ok(metadata) = path.metadata() {
-        // Skip large files
-        if metadata.len() > LARGE_FILE_THRESHOLD {
-          if let Ok(file) = std::fs::File::open(path) {
-            if let Ok(mmap) = unsafe { Mmap::map(&file) } {
-              let pb = progress.lock().start_file(&file_path, patterns.len());
-              let mut found_match = false;
-              for (i, line) in
-                String::from_utf8_lossy(&mmap).lines().enumerate()
-              {
-                for pattern in &patterns {
-                  if pattern.regex.is_match(line) {
-                    found_match = true;
-                    matches.lock().push(Match {
-                      pattern_name: pattern.name.clone(),
-                      file_path: path.to_string_lossy().to_string(),
-                      line_number: (i + 1) as u64,
-                      line: line.to_string(),
-                      pattern: pattern.pattern.clone(),
-                    });
+    // Process files in batches
+    for chunk in files.chunks(max_scans) {
+      chunk.into_par_iter().for_each(|entry| {
+        let binding = entry.as_ref().unwrap();
+        let path = binding.path();
+        let file_path = path.display().to_string();
+
+        // Quick binary check and size check
+        if let Ok(metadata) = path.metadata() {
+          // Skip large files
+          if metadata.len() > LARGE_FILE_THRESHOLD {
+            if let Ok(file) = std::fs::File::open(path) {
+              if let Ok(mmap) = unsafe { Mmap::map(&file) } {
+                let pb = progress.lock().start_file(&file_path, patterns.len());
+                let mut found_match = false;
+                for (i, line) in
+                  String::from_utf8_lossy(&mmap).lines().enumerate()
+                {
+                  for pattern in &patterns {
+                    if pattern.regex.is_match(line) {
+                      found_match = true;
+                      matches.lock().push(Match {
+                        pattern_name: pattern.name.clone(),
+                        file_path: path.to_string_lossy().to_string(),
+                        line_number: (i + 1) as u64,
+                        line: line.to_string(),
+                        pattern: pattern.pattern.clone(),
+                      });
+                    }
+                    pb.inc(1);
                   }
-                  pb.inc(1);
+                }
+                pb.finish_with_message(if found_match {
+                  "found matches"
+                } else {
+                  "clean"
+                });
+                return;
+              }
+            }
+          }
+
+          // Quick binary check
+          if let Ok(file) = std::fs::File::open(path) {
+            use std::io::Read;
+            let mut buffer = vec![0; BINARY_CHECK_BYTES];
+            if file
+              .take(BINARY_CHECK_BYTES as u64)
+              .read(&mut buffer)
+              .is_ok()
+              && buffer.iter().any(|&b| b == 0)
+            {
+              return; // Skip binary files
+            }
+          }
+        }
+
+        let pb = progress.lock().start_file(&file_path, patterns.len());
+        let mut found_match = false;
+
+        // Regular file scanning with compiled patterns
+        let mut searcher = SearcherBuilder::new()
+          .binary_detection(BinaryDetection::quit(b'\x00'))
+          .line_number(true)
+          .build();
+
+        for pattern in &patterns {
+          pb.set_message(format!("checking {}", pattern.name));
+
+          if let Ok(()) = searcher.search_path(
+            grep_regex::RegexMatcher::new(pattern.regex.as_str()).unwrap(),
+            path,
+            UTF8(|line_number, line| {
+              if let Some(ref ignore) = &ignore_pattern_matcher {
+                if ignore.is_match(line.as_bytes()).unwrap_or(false) {
+                  return Ok(true);
                 }
               }
-              pb.finish_with_message(if found_match {
-                "found matches"
-              } else {
-                "clean"
+
+              found_match = true;
+              matches.lock().push(Match {
+                pattern_name: pattern.name.clone(),
+                file_path: path.to_string_lossy().to_string(),
+                line_number,
+                line: line.to_string(),
+                pattern: pattern.pattern.clone(),
               });
-              return;
-            }
-          }
+              Ok(true) // Continue searching for more matches
+            }),
+          ) {}
+
+          pb.inc(1);
         }
 
-        // Quick binary check
-        if let Ok(file) = std::fs::File::open(path) {
-          use std::io::{Read, Seek, SeekFrom};
-          let mut buffer = vec![0; BINARY_CHECK_BYTES];
-          if file
-            .take(BINARY_CHECK_BYTES as u64)
-            .read(&mut buffer)
-            .is_ok()
-            && buffer.iter().any(|&b| b == 0)
-          {
-            return; // Skip binary files
-          }
-        }
-      }
+        progress
+          .lock()
+          .complete_file(file_path.clone(), found_match, &pb);
+        scanned_files.lock().insert(file_path);
+      });
 
-      let pb = progress.lock().start_file(&file_path, patterns.len());
-      let mut found_match = false;
-
-      // Regular file scanning with compiled patterns
-      let mut searcher = SearcherBuilder::new()
-        .binary_detection(BinaryDetection::quit(b'\x00'))
-        .line_number(true)
-        .build();
-
-      for pattern in &patterns {
-        pb.set_message(format!("checking {}", pattern.name));
-
-        if let Ok(()) = searcher.search_path(
-          grep_regex::RegexMatcher::new(pattern.regex.as_str()).unwrap(),
-          path,
-          UTF8(|line_number, line| {
-            if let Some(ref ignore) = &ignore_pattern_matcher {
-              if ignore.is_match(line.as_bytes()).unwrap_or(false) {
-                return Ok(true);
-              }
-            }
-
-            found_match = true;
-            matches.lock().push(Match {
-              pattern_name: pattern.name.clone(),
-              file_path: path.to_string_lossy().to_string(),
-              line_number,
-              line: line.to_string(),
-              pattern: pattern.pattern.clone(),
-            });
-            Ok(true) // Continue searching for more matches
-          }),
-        ) {}
-
-        pb.inc(1);
-      }
-
-      progress
-        .lock()
-        .complete_file(file_path.clone(), found_match, &pb);
-      scanned_files.lock().insert(file_path);
-    });
+      // Small pause between batches to allow screen updates
+      std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 
     // Move results back to scanner
     self.matches = Arc::try_unwrap(matches)
@@ -380,36 +387,6 @@ impl Scanner<'_> {
       .finish()?;
 
     Ok(())
-  }
-
-  fn scan_mmap(
-    &mut self,
-    mmap: &Mmap,
-    path: &Path,
-    patterns: &[CompiledPattern],
-    pb: &ProgressBar,
-  ) {
-    let mut found_match = false;
-    for (i, line) in String::from_utf8_lossy(mmap).lines().enumerate() {
-      for pattern in patterns {
-        if pattern.regex.is_match(line) {
-          found_match = true;
-          self.matches.push(Match {
-            pattern_name: pattern.name.clone(),
-            file_path: path.to_string_lossy().to_string(),
-            line_number: (i + 1) as u64,
-            line: line.to_string(),
-            pattern: pattern.pattern.clone(),
-          });
-        }
-        pb.inc(1);
-      }
-    }
-    pb.finish_with_message(if found_match {
-      "found matches"
-    } else {
-      "clean"
-    });
   }
 
   pub fn print_results(&self) {
