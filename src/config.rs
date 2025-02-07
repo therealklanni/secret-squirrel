@@ -25,7 +25,7 @@ pub struct Pattern {
 }
 
 #[derive(Debug, PartialEq, Ord, PartialOrd, Eq)]
-enum SeverityLevel {
+pub enum SeverityLevel {
   Low,
   Medium,
   High,
@@ -53,7 +53,7 @@ pub struct Config {
   #[serde(skip)]
   severity_filter: Option<SeverityLevel>,
   #[serde(skip)]
-  computed_severity: Option<SeverityLevel>,
+  pub computed_severity: Option<SeverityLevel>,
 }
 
 impl Config {
@@ -169,7 +169,7 @@ impl Config {
       .or(self.computed_severity.as_ref())
   }
 
-  fn meets_severity(&self, pattern: &Pattern) -> bool {
+  pub fn meets_severity(&self, pattern: &Pattern) -> bool {
     if let Some(min_severity) = self.get_effective_severity() {
       let pattern_severity = SeverityLevel::from(pattern.severity.as_str());
       pattern_severity >= *min_severity

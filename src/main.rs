@@ -1,6 +1,7 @@
 mod config;
 mod debug;
 mod paths;
+mod scan;
 
 use anyhow::Result;
 use clap::Parser;
@@ -52,12 +53,16 @@ fn run() -> Result<()> {
   println!("Scanning path: {}", cli.path.display());
   if cli.staged {
     println!("Scanning only staged files");
+    // TODO: Implement staged files scanning
   }
   if cli.history {
     println!("Scanning git history");
+    // TODO: Implement git history scanning
   }
 
-  // TODO: Implement scanning logic
+  let mut scanner = scan::Scanner::new(&config);
+  scanner.scan_path(&cli.path)?;
+  scanner.print_results();
 
   Ok(())
 }
