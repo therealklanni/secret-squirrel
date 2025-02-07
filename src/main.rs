@@ -29,11 +29,20 @@ struct Cli {
   /// Print current configuration
   #[arg(long)]
   print_config: bool,
+
+  /// Only show patterns of this severity or higher
+  #[arg(long, value_parser = ["low", "medium", "high", "critical"], ignore_case = true)]
+  severity: Option<String>,
 }
 
 fn run() -> Result<()> {
   let cli = Cli::parse();
-  let config = config::Config::load_with_path(cli.config)?;
+  let mut config = config::Config::load_with_path(cli.config)?;
+
+  // Apply severity filter if provided
+  if let Some(severity) = cli.severity {
+    config.set_severity_filter(&severity);
+  }
 
   if cli.print_config {
     config.print();

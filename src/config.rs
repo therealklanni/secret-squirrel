@@ -24,12 +24,33 @@ pub struct Pattern {
   pub severity: String,
 }
 
+#[derive(Debug, PartialEq, Ord, PartialOrd, Eq)]
+enum SeverityLevel {
+  Low,
+  Medium,
+  High,
+  Critical,
+}
+
+impl From<&str> for SeverityLevel {
+  fn from(s: &str) -> Self {
+    match s.to_lowercase().as_str() {
+      "critical" => SeverityLevel::Critical,
+      "high" => SeverityLevel::High,
+      "medium" => SeverityLevel::Medium,
+      _ => SeverityLevel::Low,
+    }
+  }
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Config {
   #[serde(default)]
   pub patterns: HashMap<String, Pattern>,
   pub ignore_patterns: Option<Vec<String>>,
   pub ignore_paths: Option<Vec<String>>,
+  #[serde(skip)]
+  severity_filter: Option<SeverityLevel>,
 }
 
 impl Config {
@@ -110,6 +131,19 @@ impl Config {
     Ok(serde_yaml::from_str(&fs::read_to_string(&local_path)?)?)
   }
 
+  pub fn set_severity_filter(&mut self, level: &str) {
+    self.severity_filter = Some(SeverityLevel::from(level));
+  }
+
+  fn meets_severity(&self, pattern: &Pattern) -> bool {
+    if let Some(min_severity) = &self.severity_filter {
+      let pattern_severity = SeverityLevel::from(pattern.severity.as_str());
+      pattern_severity >= *min_severity
+    } else {
+      true
+    }
+  }
+
   pub fn print(&self) {
     println!("{}", style("Current Configuration:").bold().cyan());
     println!("{}", style("======================").cyan());
@@ -135,6 +169,10 @@ impl Config {
 
     println!("\n{}", style("Detection Patterns:").bold());
     for (name, pattern) in &self.patterns {
+      if !self.meets_severity(pattern) {
+        continue;
+      }
+
       let severity_style = match pattern.severity.to_lowercase().as_str() {
         "critical" => style(&pattern.severity).red().bold(),
         "high" => style(&pattern.severity).red(),
