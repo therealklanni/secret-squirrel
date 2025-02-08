@@ -7,6 +7,8 @@ mod ui;
 use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "ssq")]
@@ -38,6 +40,17 @@ struct Cli {
 }
 
 fn run() -> Result<()> {
+  let running = Arc::new(AtomicBool::new(true));
+  let r = running.clone();
+
+  ctrlc::set_handler(move || {
+    r.store(false, Ordering::SeqCst);
+    // Clean up terminal state immediately
+    ui::ScanUI::cleanup();
+    println!("\nScan interrupted.");
+    std::process::exit(0);
+  })?;
+
   let cli = Cli::parse();
   let mut config = config::Config::load_with_path(cli.config)?;
 
@@ -61,16 +74,27 @@ fn run() -> Result<()> {
     // TODO: Implement git history scanning
   }
 
-  let mut scanner = scan::Scanner::new(&config);
-  scanner.scan_path(&cli.path)?;
-  scanner.print_results();
+  let mut scanner = scan::Scanner::new(&config, running);
+  let result = scanner.scan_path(&cli.path);
 
-  Ok(())
+  // Only print results if we weren't interrupted
+  if result.is_ok() {
+    scanner.print_results();
+  }
+
+  result
 }
 
 fn main() {
+  let hook = std::panic::take_hook();
+  std::panic::set_hook(Box::new(move |info| {
+    ui::ScanUI::cleanup();
+    hook(info);
+  }));
+
   if let Err(e) = run() {
-    eprintln!("Error: {e:#}");
+    ui::ScanUI::cleanup();
+    eprintln!("\nError: {e:#}");
     std::process::exit(1);
   }
 }

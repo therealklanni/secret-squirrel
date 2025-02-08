@@ -12,6 +12,7 @@ use parking_lot::Mutex;
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 const LARGE_FILE_THRESHOLD: u64 = 1024 * 1024; // 1MB
@@ -31,14 +32,16 @@ pub struct Scanner<'a> {
   config: &'a Config,
   matches: Vec<Match>,
   scanned_files: HashSet<String>,
+  running: Arc<AtomicBool>,
 }
 
 impl<'a> Scanner<'a> {
-  pub fn new(config: &'a Config) -> Self {
+  pub fn new(config: &'a Config, running: Arc<AtomicBool>) -> Self {
     Self {
       config,
       matches: Vec::new(),
       scanned_files: HashSet::new(),
+      running,
     }
   }
 }
@@ -116,6 +119,12 @@ impl Scanner<'_> {
 
     // Process files in parallel with new UI updates
     for chunk in files.chunks(MAX_CONCURRENT_SCANS) {
+      if !self.running.load(Ordering::SeqCst) {
+        ScanUI::cleanup();
+        println!("\n{}", style("Scan interrupted.").yellow());
+        return Ok(());
+      }
+
       chunk.into_par_iter().for_each(|entry| {
         let binding = entry;
         let path = binding.path();
@@ -187,6 +196,9 @@ impl Scanner<'_> {
         scanned_files.lock().insert(file_path);
       });
     }
+
+    // Clean up UI before returning
+    ScanUI::cleanup();
 
     // Move results back
     self.matches = Arc::try_unwrap(matches)
@@ -350,7 +362,8 @@ mod tests {
     create_test_files(&temp)?;
 
     let config = create_test_config(); // Remove mut as we don't modify it
-    let mut scanner = Scanner::new(&config);
+    let running = Arc::new(AtomicBool::new(true));
+    let mut scanner = Scanner::new(&config, running);
     scanner.scan_path(temp.path())?;
 
     // Debug output
@@ -381,7 +394,8 @@ mod tests {
     let mut config = create_test_config();
 
     // First verify we get both matches
-    let mut scanner = Scanner::new(&config);
+    let running = Arc::new(AtomicBool::new(true));
+    let mut scanner = Scanner::new(&config, running.clone());
     scanner.scan_path(temp.path())?;
     assert_eq!(
       scanner.matches.len(),
@@ -391,7 +405,7 @@ mod tests {
 
     // Clear scanner and set severity
     config.set_severity_filter("high");
-    let mut scanner = Scanner::new(&config);
+    let mut scanner = Scanner::new(&config, running);
     scanner.scan_path(temp.path())?;
 
     // Debug output
@@ -416,7 +430,8 @@ mod tests {
     let mut config = create_test_config();
     config.ignore_patterns = Some(vec!["TEST_API_KEY=.*".into()]);
 
-    let mut scanner = Scanner::new(&config);
+    let running = Arc::new(AtomicBool::new(true));
+    let mut scanner = Scanner::new(&config, running);
     scanner.scan_path(temp.path())?;
 
     assert!(!scanner
@@ -443,7 +458,8 @@ mod tests {
     let mut config = create_test_config();
     config.ignore_paths = Some(vec!["tests/*".into()]);
 
-    let mut scanner = Scanner::new(&config);
+    let running = Arc::new(AtomicBool::new(true));
+    let mut scanner = Scanner::new(&config, running);
     scanner.scan_path(temp.path())?;
 
     assert!(!scanner

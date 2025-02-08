@@ -1,14 +1,17 @@
-use std::io::stdout;
+use std::io::{stdout, Write};
+use std::sync::Once;
 
 use anyhow::Result;
-use crossterm::{
-  execute,
-  terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen,
-    LeaveAlternateScreen,
-  },
-};
+use parking_lot::Mutex;
 use ratatui::{
+  crossterm::{
+    cursor::{self, Hide, Show},
+    execute,
+    terminal::{
+      disable_raw_mode, enable_raw_mode, EnterAlternateScreen,
+      LeaveAlternateScreen,
+    },
+  },
   layout::{Constraint, Direction, Layout},
   style::{Color, Style},
   text::{Line, Span},
@@ -21,6 +24,8 @@ const PROGRESS_WIDTH: usize = 12; // [███░░░░░] 99/99
 const SPINNER_WIDTH: usize = 2; // "⟳ "
 const SPACING: usize = 2; // spaces between columns
 
+static CLEANUP: Once = Once::new();
+
 pub struct ScanUI {
   terminal: Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
   total_files: usize,
@@ -30,13 +35,16 @@ pub struct ScanUI {
 }
 
 impl ScanUI {
-  pub fn new(total_files: usize) -> Result<Self> {
-    enable_raw_mode()?;
+  pub fn cleanup() {
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    let _ = disable_raw_mode();
+    let _ = execute!(stdout, LeaveAlternateScreen, Show);
+    let _ = stdout.flush();
+  }
 
-    let terminal =
-      Terminal::new(ratatui::backend::CrosstermBackend::new(stdout))?;
+  pub fn new(total_files: usize) -> Result<Self> {
+    let backend = ratatui::backend::CrosstermBackend::new(stdout());
+    let terminal = Terminal::new(backend)?;
 
     Ok(Self {
       terminal,
@@ -48,20 +56,22 @@ impl ScanUI {
   }
 
   pub fn render(&mut self) -> Result<()> {
-    let total_files = self.total_files;
-    let processed_files = self.processed_files;
-    let problem_files = &self.problem_files;
-    let active_scans = &self.active_scans;
+    enable_raw_mode()?;
+    execute!(stdout(), EnterAlternateScreen, Hide)?;
 
     self.terminal.draw(|f| {
       Self::draw_frame(
         f,
-        total_files,
-        processed_files,
-        problem_files,
-        active_scans,
+        self.total_files,
+        self.processed_files,
+        &self.problem_files,
+        &self.active_scans,
       );
     })?;
+
+    disable_raw_mode()?;
+    execute!(stdout(), Show)?;
+
     Ok(())
   }
 
@@ -201,12 +211,21 @@ impl ScanUI {
     self.active_scans.retain(|(p, ..)| p != path);
     self.render().unwrap();
   }
+
+  pub fn finish() -> Result<()> {
+    let mut stdout = stdout();
+
+    disable_raw_mode()?;
+    execute!(stdout, LeaveAlternateScreen, cursor::Show,)?;
+    stdout.flush()?;
+
+    Ok(())
+  }
 }
 
 impl Drop for ScanUI {
   fn drop(&mut self) {
-    disable_raw_mode().unwrap();
-    execute!(self.terminal.backend_mut(), LeaveAlternateScreen).unwrap();
+    Self::cleanup();
   }
 }
 
