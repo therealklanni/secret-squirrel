@@ -2,6 +2,7 @@ mod config;
 mod debug;
 mod paths;
 mod scan;
+mod ui;
 
 use anyhow::Result;
 use clap::Parser;

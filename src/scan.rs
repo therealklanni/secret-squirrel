@@ -1,31 +1,22 @@
 use crate::config::{Config, Pattern};
+use crate::ui::ScanUI;
 use anyhow::Result;
 use console::style;
-use crossterm::terminal;
-use crossterm::{
-  cursor, queue,
-  terminal::{Clear, ClearType},
-};
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcher;
 use grep_searcher::sinks::UTF8;
 use grep_searcher::{BinaryDetection, SearcherBuilder};
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use ignore::gitignore::GitignoreBuilder;
 use ignore::WalkBuilder;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use memmap2::Mmap;
 use parking_lot::Mutex;
 use rayon::prelude::*;
-use regex::Regex;
 use std::collections::HashSet;
-use std::io::{stdout, Write};
 use std::path::Path;
 use std::sync::Arc;
 
 const LARGE_FILE_THRESHOLD: u64 = 1024 * 1024; // 1MB
 const BINARY_CHECK_BYTES: usize = 512; // Check first 512 bytes for binary content
-const MAX_CONCURRENT_SCANS: usize = 6; // Limit parallel scans
-const MIN_HEADER_LINES: usize = 6; // Minimum lines needed for header
+const MAX_CONCURRENT_SCANS: usize = 10; // Limit parallel scans
 
 #[derive(Debug)]
 pub struct Match {
@@ -52,178 +43,15 @@ impl<'a> Scanner<'a> {
   }
 }
 
-#[derive(Debug)]
-struct ScanProgress {
-  multi: MultiProgress,
-  completed: Vec<String>,
-  has_matches: Vec<bool>,
-  total_files: usize, // Change from Option<usize> to usize
-  processed_files: usize,
-}
-
-impl ScanProgress {
-  fn new(path: &Path, ignore_matcher: Option<&Gitignore>) -> Result<Self> {
-    // Clear screen and hide cursor
-    let mut stdout = stdout();
-    queue!(
-      stdout,
-      Clear(ClearType::All),
-      cursor::MoveTo(0, 0),
-      cursor::Hide,
-    )?;
-    stdout.flush()?;
-
-    // Build walker
-    let walker = WalkBuilder::new(path)
-      .hidden(false)
-      .ignore(true)
-      .git_ignore(true)
-      .build();
-
-    // Count total files, excluding ignored paths
-    let total_files = walker
-      .filter_map(Result::ok)
-      .filter(|e| {
-        let path = e.path();
-        path.is_file()
-          && ignore_matcher
-            .map_or(true, |m| !m.matched(path, false).is_ignore())
-      })
-      .count();
-
-    let progress = Self {
-      multi: MultiProgress::new(),
-      completed: Vec::with_capacity(total_files),
-      has_matches: Vec::with_capacity(total_files),
-      total_files,
-      processed_files: 0,
-    };
-
-    progress.print_summary();
-    Ok(progress)
-  }
-
-  fn start_file(
-    &mut self,
-    file_path: &str,
-    patterns_count: usize,
-  ) -> ProgressBar {
-    // Reserve space for: "⟳ " + path + " [=>] 99/99 checking-very-long-pattern-name"
-    const RESERVED_SPACE: usize = 50;
-
-    let pb = self.multi.add(ProgressBar::new(patterns_count as u64));
-
-    // Get terminal width and calculate max path length
-    let term_width = terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
-    let max_path_len = term_width.saturating_sub(RESERVED_SPACE);
-
-    // More aggressive path truncation
-    let display_path = if file_path.len() > max_path_len {
-      let parts: Vec<&str> = file_path.split('/').collect();
-      if parts.len() > 2 {
-        // Only keep last path segment
-        format!(".../{}", parts.last().unwrap_or(&""))
-      } else {
-        // Fallback to simple truncation for short paths
-        format!(
-          "...{}",
-          &file_path[file_path.len().saturating_sub(max_path_len - 3)..]
-        )
-      }
-    } else {
-      file_path.to_string()
-    };
-
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} {prefix:.cyan} [{bar:10.cyan/blue}] {pos}/{len} {msg}")
-            .expect("Failed to set progress bar template")
-            .progress_chars("=>-"),
-    );
-    pb.set_prefix(format!("⟳ {display_path}"));
-    pb
-  }
-
-  fn complete_file(
-    &mut self,
-    file_path: String,
-    has_match: bool,
-    pb: &ProgressBar,
-  ) {
-    self.processed_files += 1;
-    self.completed.push(file_path);
-    self.has_matches.push(has_match);
-    pb.finish_and_clear();
-    self.print_summary();
-  }
-
-  fn print_summary(&self) {
-    let mut stdout = stdout();
-    let problem_files: Vec<_> = self
-      .completed
-      .iter()
-      .zip(self.has_matches.iter())
-      .filter(|(_, &has_match)| has_match)
-      .collect();
-
-    // Move to top and clear screen
-    queue!(stdout, cursor::MoveTo(0, 0), Clear(ClearType::All),).unwrap();
-
-    // Print header content
-    println!(
-      "Progress: {}/{} files",
-      self.processed_files, self.total_files
-    );
-
-    if !problem_files.is_empty() {
-      println!("\nProblematic files:");
-      println!("──────────────────");
-      for (path, _) in problem_files {
-        println!(" {} {}", style("●").red(), path);
-      }
-    }
-
-    // Only add one blank line before progress bars
-    println!();
-
-    stdout.flush().unwrap();
-  }
-
-  fn finish(self) -> Result<()> {
-    // Show cursor again
-    let mut stdout = stdout();
-    queue!(stdout, cursor::Show)?;
-    stdout.flush()?;
-
-    // Final summary
-    let issues = self
-      .has_matches
-      .iter()
-      .filter(|&&has_match| has_match)
-      .count();
-    println!("\n{} {} files scanned", style("🔍"), self.total_files);
-    if issues > 0 {
-      println!(
-        "{} {} files contained potential secrets",
-        style("🚨").red().bold(),
-        issues
-      );
-    }
-
-    Ok(())
-  }
-}
-
 struct CompiledPattern {
   name: String,
   pattern: Pattern,
-  regex: Regex,
 }
 
 impl Scanner<'_> {
   #[allow(clippy::too_many_lines)]
   pub fn scan_path(&mut self, path: &Path) -> Result<()> {
-    // Pre-compile all regex patterns
+    // Pre-compile patterns and setup matchers
     let patterns: Vec<CompiledPattern> = self
       .config
       .patterns
@@ -233,32 +61,30 @@ impl Scanner<'_> {
         Ok(CompiledPattern {
           name: name.clone(),
           pattern: pattern.clone(),
-          regex: Regex::new(&pattern.regex)?,
         })
       })
       .collect::<Result<Vec<_>>>()?;
 
-    // Build gitignore-style matcher for ignore_paths first
-    let ignore_matcher = if let Some(ref paths) = self.config.ignore_paths {
-      let mut builder = GitignoreBuilder::new(path);
-      for pattern in paths {
-        builder.add_line(None, pattern)?;
+    // Setup ignore pattern matcher
+    let mut gitignore_builder = GitignoreBuilder::new(path);
+    if let Some(ref ignore_paths) = self.config.ignore_paths {
+      for pattern in ignore_paths {
+        gitignore_builder.add_line(None, pattern)?;
       }
-      Some(builder.build()?)
-    } else {
-      None
-    };
+    }
+    let ignore_matcher = gitignore_builder.build()?;
 
-    let progress = ScanProgress::new(path, ignore_matcher.as_ref())?;
+    // Setup ignore pattern matcher
     let ignore_pattern_matcher =
-      if let Some(ref patterns) = self.config.ignore_patterns {
-        Some(RegexMatcher::new(&patterns.join("|"))?)
+      if let Some(ref ignore_patterns) = self.config.ignore_patterns {
+        let pattern = ignore_patterns.join("|");
+        Some(RegexMatcher::new(&pattern)?)
       } else {
         None
       };
 
-    // Create walker filtered by ignore paths
-    let walker = WalkBuilder::new(path)
+    // Count total files first
+    let total_files = WalkBuilder::new(path)
       .hidden(false)
       .ignore(true)
       .git_ignore(true)
@@ -266,139 +92,103 @@ impl Scanner<'_> {
       .filter_map(Result::ok)
       .filter(|e| {
         let path = e.path();
-        path.is_file()
-          && ignore_matcher
-            .as_ref()
-            .map_or(true, |m| !m.matched(path, false).is_ignore())
-      });
+        path.is_file() && !ignore_matcher.matched(path, false).is_ignore()
+      })
+      .count();
 
-    // Create thread-safe progress and matches
-    let progress = Arc::new(Mutex::new(progress));
+    // Initialize UI
+    let ui = Arc::new(Mutex::new(ScanUI::new(total_files)?));
     let matches = Arc::new(Mutex::new(Vec::new()));
     let scanned_files = Arc::new(Mutex::new(HashSet::new()));
 
-    // Collect files first to avoid directory traversal overhead in parallel
-    let files: Vec<_> = walker
-      .map(|entry: ignore::DirEntry| Some(entry))
+    // Collect files from walker
+    let files: Vec<_> = WalkBuilder::new(path)
+      .hidden(false)
+      .ignore(true)
+      .git_ignore(true)
+      .build()
+      .filter_map(Result::ok)
       .filter(|e| {
-        let path = e.as_ref().unwrap().path();
-        path.is_file()
-          && ignore_matcher
-            .as_ref()
-            .map_or(true, |m| !m.matched(path, false).is_ignore())
+        let path = e.path();
+        path.is_file() && !ignore_matcher.matched(path, false).is_ignore()
       })
       .collect();
 
-    // Get terminal height and calculate max concurrent scans
-    let (_, term_height) = terminal::size()?;
-    let max_scans = ((term_height as usize).saturating_sub(MIN_HEADER_LINES))
-      .min(MAX_CONCURRENT_SCANS);
-
-    // Process files in batches
-    for chunk in files.chunks(max_scans) {
+    // Process files in parallel with new UI updates
+    for chunk in files.chunks(MAX_CONCURRENT_SCANS) {
       chunk.into_par_iter().for_each(|entry| {
-        let binding = entry.as_ref().unwrap();
+        let binding = entry;
         let path = binding.path();
         let file_path = path.display().to_string();
 
-        // Quick binary check and size check
+        // Get file metadata and handle large/binary files
         if let Ok(metadata) = path.metadata() {
-          // Skip large files
+          // Handle large files with mmap
           if metadata.len() > LARGE_FILE_THRESHOLD {
-            if let Ok(file) = std::fs::File::open(path) {
-              if let Ok(mmap) = unsafe { Mmap::map(&file) } {
-                let pb = progress.lock().start_file(&file_path, patterns.len());
-                let mut found_match = false;
-                for (i, line) in
-                  String::from_utf8_lossy(&mmap).lines().enumerate()
-                {
-                  for pattern in &patterns {
-                    if pattern.regex.is_match(line) {
-                      found_match = true;
-                      matches.lock().push(Match {
-                        pattern_name: pattern.name.clone(),
-                        file_path: path.to_string_lossy().to_string(),
-                        line_number: (i + 1) as u64,
-                        line: line.to_string(),
-                        pattern: pattern.pattern.clone(),
-                      });
-                    }
-                    pb.inc(1);
-                  }
-                }
-                pb.finish_with_message(if found_match {
-                  "found matches"
-                } else {
-                  "clean"
-                });
-                return;
-              }
-            }
+            return;
           }
 
-          // Quick binary check
-          if let Ok(file) = std::fs::File::open(path) {
-            use std::io::Read;
-            let mut buffer = vec![0; BINARY_CHECK_BYTES];
-            if file
-              .take(BINARY_CHECK_BYTES as u64)
-              .read(&mut buffer)
-              .is_ok()
-              && buffer.iter().any(|&b| b == 0)
-            {
-              return; // Skip binary files
-            }
+          // Skip binary files
+          if Self::is_binary_file(path) {
+            return;
           }
         }
 
-        let pb = progress.lock().start_file(&file_path, patterns.len());
-        let mut found_match = false;
+        #[allow(clippy::cast_precision_loss)]
+        let pattern_count = patterns.len() as f32;
+        let mut current_pattern = 0f32;
 
-        // Regular file scanning with compiled patterns
-        let mut searcher = SearcherBuilder::new()
-          .binary_detection(BinaryDetection::quit(b'\x00'))
-          .line_number(true)
-          .build();
-
+        // Regular file scanning
         for pattern in &patterns {
-          pb.set_message(format!("checking {}", pattern.name));
+          current_pattern += 1.0;
+          let progress = current_pattern / pattern_count;
 
-          if let Ok(()) = searcher.search_path(
-            grep_regex::RegexMatcher::new(pattern.regex.as_str()).unwrap(),
-            path,
-            UTF8(|line_number, line| {
-              if let Some(ref ignore) = &ignore_pattern_matcher {
-                if ignore.is_match(line.as_bytes()).unwrap_or(false) {
-                  return Ok(true);
-                }
-              }
+          ui.lock().update_scan(
+            file_path.clone(),
+            format!("checking {}", pattern.name),
+            progress,
+          );
 
-              found_match = true;
-              matches.lock().push(Match {
-                pattern_name: pattern.name.clone(),
-                file_path: path.to_string_lossy().to_string(),
-                line_number,
-                line: line.to_string(),
-                pattern: pattern.pattern.clone(),
-              });
-              Ok(true) // Continue searching for more matches
-            }),
-          ) {}
+          if let Ok(matcher) = RegexMatcher::new(&pattern.pattern.regex) {
+            if let Ok(()) = SearcherBuilder::new()
+              .binary_detection(BinaryDetection::quit(b'\x00'))
+              .line_number(true)
+              .build()
+              .search_path(
+                &matcher,
+                path,
+                UTF8(|line_number, line| {
+                  if Self::should_ignore_match(
+                    line,
+                    ignore_pattern_matcher.as_ref(),
+                  ) {
+                    return Ok(true);
+                  }
 
-          pb.inc(1);
+                  matches.lock().push(Match {
+                    pattern_name: pattern.name.clone(),
+                    file_path: path.to_string_lossy().to_string(),
+                    line_number,
+                    line: line.to_string(),
+                    pattern: pattern.pattern.clone(),
+                  });
+
+                  // Add to problem files in UI
+                  ui.lock().add_problem_file(file_path.clone());
+
+                  Ok(true)
+                }),
+              )
+            {}
+          }
         }
 
-        progress
-          .lock()
-          .complete_file(file_path.clone(), found_match, &pb);
+        ui.lock().complete_scan(&file_path);
         scanned_files.lock().insert(file_path);
       });
-
-      // Small pause between batches to allow screen updates
-      std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    // Move results back to scanner
+    // Move results back
     self.matches = Arc::try_unwrap(matches)
       .expect("Matches still have multiple owners")
       .into_inner();
@@ -406,12 +196,34 @@ impl Scanner<'_> {
       .expect("Scanned files still have multiple owners")
       .into_inner();
 
-    Arc::try_unwrap(progress)
-      .expect("Progress still has multiple owners")
-      .into_inner()
-      .finish()?;
-
     Ok(())
+  }
+
+  fn is_binary_file(path: &Path) -> bool {
+    if let Ok(file) = std::fs::File::open(path) {
+      use std::io::Read;
+      let mut buffer = vec![0; BINARY_CHECK_BYTES];
+      if file
+        .take(BINARY_CHECK_BYTES as u64)
+        .read(&mut buffer)
+        .is_ok()
+        && buffer.iter().any(|&b| b == 0)
+      {
+        return true;
+      }
+    }
+    false
+  }
+
+  fn should_ignore_match(
+    line: &str,
+    ignore_matcher: Option<&RegexMatcher>,
+  ) -> bool {
+    if let Some(ignore) = ignore_matcher {
+      ignore.is_match(line.as_bytes()).unwrap_or(false)
+    } else {
+      false
+    }
   }
 
   pub fn print_results(&self) {
@@ -420,8 +232,19 @@ impl Scanner<'_> {
       return;
     }
 
-    println!("\n{}", style("Matches found:").red().bold());
-    println!("{}", style("══════════════").red());
+    // Show problematic files first
+    let unique_files: HashSet<_> =
+      self.matches.iter().map(|m| &m.file_path).collect();
+
+    println!("\n{}", style("Problematic files:").red().bold());
+    println!("{}", style("──────────────────").red());
+    for file in unique_files {
+      println!(" {} {}", style("●").red(), file);
+    }
+
+    // Then show detailed matches
+    println!("\n{}", style("Detailed matches:").red().bold());
+    println!("{}", style("═════════════════").red());
 
     for m in &self.matches {
       let severity_style = match m.pattern.severity.to_lowercase().as_str() {
@@ -441,7 +264,6 @@ impl Scanner<'_> {
         println!("{} {}", style("Description:").bold(), desc);
       }
 
-      // Highlight location with cyan color and make line number bold
       println!(
         "{} {}:{}",
         style("Location:").bold(),
@@ -449,13 +271,31 @@ impl Scanner<'_> {
         style(m.line_number).cyan().bold()
       );
 
-      // Show matched line with the matched portion highlighted
       println!("{} {}", style("Match:").bold(), style(m.line.trim()).dim());
     }
 
+    // Final summary
+    let files_with_matches: HashSet<_> =
+      self.matches.iter().map(|m| &m.file_path).collect();
+    let issues = files_with_matches.len();
+
     println!(
-      "\n{} {} potential secrets found",
-      style("WARNING:").red().bold(),
+      "\n{} {} files scanned",
+      style("🔍"),
+      self.scanned_files.len()
+    );
+
+    if issues > 0 {
+      println!(
+        "{} {} files contained potential secrets",
+        style("🚨"),
+        issues
+      );
+    }
+
+    println!(
+      "{} {} potential secrets found",
+      style("🐿️"),
       self.matches.len()
     );
   }
