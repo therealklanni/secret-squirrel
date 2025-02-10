@@ -33,6 +33,24 @@
       },
       "description": "Glob patterns for files and directories to ignore"
     },
+    "ignore_pattern_behavior": {
+      "type": "string",
+      "enum": [
+        "merge",
+        "replace"
+      ],
+      "default": "merge",
+      "description": "Controls how ignore patterns are combined with base config. 'merge' (default) will combine patterns, 'replace' will use only local patterns"
+    },
+    "ignore_paths_behavior": {
+      "type": "string",
+      "enum": [
+        "merge",
+        "replace"
+      ],
+      "default": "merge",
+      "description": "Controls how ignore paths are combined with base config. 'merge' (default) will combine paths, 'replace' will use only local paths"
+    },
     "patterns": {
       "type": "object",
       "additionalProperties": {

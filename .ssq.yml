@@ -2,6 +2,9 @@
 
 # severity: "MEDIUM"
 
+ignore_paths:
+  - "env/**/*"
+
 patterns:
   generic-api-key-env:
     description: "Generic API key in environment variable"
