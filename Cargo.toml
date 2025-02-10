@@ -23,6 +23,7 @@ ratatui = { version = "0.28", features = ["crossterm"] }
 rayon = "1.8"
 regex = "1.10"
 serde = { version = "1.0", features = ["derive"] }
+serde_with = "3.4"
 serde_yaml = "0.9"
 thiserror = "2.0.11"
 tokio = { version = "1.34", features = ["full"] }

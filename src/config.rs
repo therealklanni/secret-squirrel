@@ -2,6 +2,8 @@ use crate::{debug::debug, paths};
 use anyhow::Result;
 use console::style;
 use serde::{Deserialize, Serialize};
+// Add serde_with for custom serialization
+use serde_with::{serde_as, DisplayFromStr};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -44,19 +46,68 @@ impl From<&str> for SeverityLevel {
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 pub struct Config {
   #[serde(default)]
   pub patterns: HashMap<String, Pattern>,
+  #[serde(default)]
   pub ignore_patterns: Option<Vec<String>>,
+  #[serde(default)]
   pub ignore_paths: Option<Vec<String>>,
+  #[serde(default)]
   pub severity: Option<String>,
+  #[serde(default = "default_ignore_behavior")]
+  pub ignore_pattern_behavior: String,
+  #[serde(default = "default_ignore_behavior")]
+  pub ignore_paths_behavior: String,
   #[serde(skip)]
   severity_filter: Option<SeverityLevel>,
   #[serde(skip)]
   pub computed_severity: Option<SeverityLevel>,
 }
 
+fn default_ignore_behavior() -> String {
+  "merge".to_string()
+}
+
 impl Config {
+  fn merge_config(&mut self, other: &Self) {
+    // Apply local config's behavior settings first
+    if other.ignore_pattern_behavior == "replace" {
+      self.ignore_pattern_behavior = other.ignore_pattern_behavior.to_string();
+    }
+    if other.ignore_paths_behavior == "replace" {
+      self.ignore_paths_behavior = other.ignore_paths_behavior.to_string();
+    }
+
+    // Then merge or replace according to the behavior settings
+    if other.ignore_patterns.is_some() {
+      self.ignore_patterns = if self.ignore_pattern_behavior == "replace" {
+        other.ignore_patterns.clone()
+      } else {
+        let mut merged = self.ignore_patterns.clone().unwrap_or_default();
+        if let Some(patterns) = &other.ignore_patterns {
+          merged.extend(patterns.clone());
+        }
+        Some(merged)
+      };
+    }
+
+    if other.ignore_paths.is_some() {
+      self.ignore_paths = if self.ignore_paths_behavior == "replace" {
+        debug("Replacing ignore paths with local config");
+        other.ignore_paths.clone()
+      } else {
+        debug("Merging ignore paths with base config");
+        let mut merged = self.ignore_paths.clone().unwrap_or_default();
+        if let Some(paths) = &other.ignore_paths {
+          merged.extend(paths.clone());
+        }
+        Some(merged)
+      };
+    }
+  }
+
   pub fn load_with_path(
     config_path: Option<PathBuf>,
   ) -> Result<Self, ConfigError> {
@@ -74,36 +125,17 @@ impl Config {
     }
 
     // Try to load and merge local config
-    if let Ok(mut local_config) = Self::load_local_config() {
+    if let Ok(local_config) = Self::load_local_config() {
       debug("Merging local config with base config");
+      base_config.merge_config(&local_config);
 
-      // Initialize local config's computed severity
+      // Update severity if local config has one
       if let Some(ref sev) = local_config.severity {
-        local_config.computed_severity =
-          Some(SeverityLevel::from(sev.as_str()));
+        base_config.severity = Some(sev.clone());
+        base_config.computed_severity = Some(SeverityLevel::from(sev.as_str()));
       }
 
-      // Merge configs
-      let mut final_config = local_config;
-
-      // Only add patterns from base that don't exist in local
-      for (name, pattern) in base_config.patterns {
-        final_config.patterns.entry(name).or_insert(pattern);
-      }
-
-      // Use local ignore lists and severity if present, otherwise use base
-      if final_config.ignore_patterns.is_none() {
-        final_config.ignore_patterns = base_config.ignore_patterns;
-      }
-      if final_config.ignore_paths.is_none() {
-        final_config.ignore_paths = base_config.ignore_paths;
-      }
-      if final_config.computed_severity.is_none() {
-        final_config.computed_severity = base_config.computed_severity;
-        final_config.severity = base_config.severity;
-      }
-
-      Ok(final_config)
+      Ok(base_config)
     } else {
       debug("Using base config");
       Ok(base_config)
@@ -152,17 +184,15 @@ impl Config {
   }
 
   pub fn set_severity_filter(&mut self, level: &str) {
-    // CLI flag takes precedence over config file
-    self.severity_filter = Some(SeverityLevel::from(level));
-    // Ensure computed_severity is cached
-    if self.computed_severity.is_none() {
-      self.computed_severity =
-        self.severity.as_deref().map(SeverityLevel::from);
-    }
+    // CLI flag updates both the filter and the base severity
+    let level = level.to_string().to_uppercase();
+    self.severity_filter = Some(SeverityLevel::from(level.as_str()));
+    self.severity = Some(level.clone());
+    self.computed_severity = Some(SeverityLevel::from(level.as_str()));
   }
 
-  fn get_effective_severity(&self) -> Option<&SeverityLevel> {
-    // Use CLI-set filter if present, otherwise use config file setting
+  pub fn get_effective_severity(&self) -> Option<&SeverityLevel> {
+    // CLI filter takes precedence, then computed severity from config
     self
       .severity_filter
       .as_ref()
@@ -178,48 +208,80 @@ impl Config {
     }
   }
 
+  pub fn get_effective_config(&self) -> ConfigDisplay {
+    ConfigDisplay {
+      severity: self
+        .get_effective_severity()
+        .map_or("LOW".to_string(), |s| {
+          match s {
+            SeverityLevel::Critical => "CRITICAL",
+            SeverityLevel::High => "HIGH",
+            SeverityLevel::Medium => "MEDIUM",
+            SeverityLevel::Low => "LOW",
+          }
+          .to_string()
+        }),
+      ignore_pattern_behavior: self.ignore_pattern_behavior.clone(),
+      ignore_paths_behavior: self.ignore_paths_behavior.clone(),
+      ignore_patterns: self.ignore_patterns.clone().unwrap_or_default(),
+      ignore_paths: self.ignore_paths.clone().unwrap_or_default(),
+      patterns: self
+        .patterns
+        .iter()
+        .filter(|(_, p)| self.meets_severity(p))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect(),
+    }
+  }
+
   pub fn print(&self) {
     println!("{}", style("Current Configuration:").bold().cyan());
     println!("{}", style("======================").cyan());
+    println!();
 
-    if let Some(ref ignore_patterns) = self.ignore_patterns {
-      println!("\n{}", style("Ignored Patterns:").bold());
-      for pattern in ignore_patterns {
-        println!("  - {pattern}");
+    // Just serialize the effective config directly
+    let yaml = serde_yaml::to_string(&self.get_effective_config())
+      .expect("Failed to serialize config");
+
+    // Print the YAML with styling
+    for line in yaml.lines() {
+      if line.starts_with("severity:") {
+        let (key, value) = line.split_once(": ").unwrap();
+        println!("{}: {}", key, style(value).yellow());
+      } else if line.contains("severity:") {
+        let (indent, rest) = line.split_at(line.find("severity:").unwrap());
+        let (key, value) = rest.split_once(": ").unwrap();
+        let severity_style = match value.to_lowercase().as_str() {
+          "critical" => style(value).red().bold(),
+          "high" => style(value).red(),
+          "medium" => style(value).yellow(),
+          _ => style(value).dim(),
+        };
+        println!("{indent}{key}: {severity_style}");
+      } else if line.ends_with(':') {
+        println!("{line}");
+      } else if line.starts_with("- ") {
+        println!("  {line}");
+      } else {
+        println!("{line}");
       }
-    }
-
-    if let Some(ref ignore_paths) = self.ignore_paths {
-      println!("\n{}", style("Ignored Paths:").bold());
-      for path in ignore_paths {
-        println!("  - {path}");
-      }
-    }
-
-    if self.patterns.is_empty() {
-      println!("\n{}", style("No detection patterns configured.").italic());
-      return;
-    }
-
-    println!("\n{}", style("Detection Patterns:").bold());
-    for (name, pattern) in &self.patterns {
-      if !self.meets_severity(pattern) {
-        continue;
-      }
-
-      let severity_style = match pattern.severity.to_lowercase().as_str() {
-        "critical" => style(&pattern.severity).red().bold(),
-        "high" => style(&pattern.severity).red(),
-        "medium" => style(&pattern.severity).yellow(),
-        _ => style(&pattern.severity).dim(),
-      };
-      println!("  - {name} ({severity_style})");
-      if let Some(desc) = &pattern.description {
-        println!("    Description: {}", style(desc).dim());
-      }
-      println!("    Pattern: {}", pattern.regex);
     }
   }
+}
+
+// Helper struct to control YAML serialization order
+#[serde_as]
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ConfigDisplay {
+  severity: String,
+  #[serde_as(as = "DisplayFromStr")]
+  ignore_pattern_behavior: String,
+  #[serde_as(as = "DisplayFromStr")]
+  ignore_paths_behavior: String,
+  ignore_patterns: Vec<String>,
+  ignore_paths: Vec<String>,
+  patterns: HashMap<String, Pattern>,
 }
 
 #[cfg(test)]

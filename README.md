@@ -9,6 +9,7 @@ A command-line tool for detecting sensitive information in your code before it g
 - [x] ⚙️ Configurable pattern matching and ignores
 - [ ] 🕒 Digs through Git history to find previously committed secrets
 - [ ] 🎯 Can focus on staged files only (perfect for git hooks)
+- [ ] 🦾 Continuous integration support
 
 ## Installation
 
