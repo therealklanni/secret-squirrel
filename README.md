@@ -39,9 +39,11 @@ ssq --history
 
 ## Configuration
 
-Create a `.ssq.yaml` in your project root:
+Create a `.ssq.yaml` in your project root. For IDE support (autocomplete and validation), add the schema reference:
 
 ```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/therealklanni/secret-squirrel/main/schema/ssq.schema.json
+
 # Ignore specific patterns
 ignore_patterns:
   - 'TEST_API_KEY=.*'
@@ -70,20 +72,19 @@ patterns:
     severity: medium
 ```
 
-## Git Hook Setup
+### Schema
 
-Add to `.git/hooks/pre-commit`:
+The configuration schema supports:
 
-```bash
-#!/bin/sh
-ssq --staged
-```
-
-Make it executable:
-```bash
-chmod +x .git/hooks/pre-commit
-```
+- `severity`: Global minimum severity level (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`)
+- `ignore_patterns`: Array of regex patterns to ignore
+- `ignore_paths`: Array of glob patterns for ignored paths
+- `patterns`: Object containing detection patterns
+  - Each pattern requires:
+    - `description`: Human-readable description
+    - `regex`: Regular expression pattern
+    - `severity`: Pattern-specific severity level
 
 ## License
 
-MIT © [Your Name]
+MIT © Kevin Lanni

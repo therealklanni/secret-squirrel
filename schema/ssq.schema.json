@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Secret Squirrel Config",
+  "description": "Configuration schema for Secret Squirrel (ssq) secret detection tool",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Schema reference for IDE support"
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+        "CRITICAL"
+      ],
+      "description": "Global minimum severity level for pattern matching"
+    },
+    "ignore_patterns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Regular expressions for patterns to ignore"
+    },
+    "ignore_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Glob patterns for files and directories to ignore"
+    },
+    "patterns": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "regex",
+          "severity"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "Human-readable description of what this pattern detects"
+          },
+          "regex": {
+            "type": "string",
+            "description": "Regular expression pattern to match"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "LOW",
+              "MEDIUM",
+              "HIGH",
+              "CRITICAL"
+            ],
+            "description": "Severity level for this pattern"
+          }
+        }
+      },
+      "description": "Detection patterns for scanning"
+    }
+  }
+}

@@ -1,4 +1,7 @@
+# yaml-language-server: $schema=./schema/ssq.schema.json
+
 # severity: "MEDIUM"
+
 patterns:
   generic-api-key-env:
     description: "Generic API key in environment variable"
